@@ -38,6 +38,7 @@ export class DemuxError extends Error {
 /** @param {File|Blob} file @returns {Source} */
 export function sourceFromFile(file) {
   return {
+    name: file.name,
     size: file.size,
     async read(start, end) {
       const slice = file.slice(start, Math.min(end, file.size));
