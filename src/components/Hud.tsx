@@ -1,55 +1,43 @@
-/**
- * What the buffer actually holds. Every number is measured, not estimated: one
- * buffered range means the edit has no hole in it.
- */
+import type { PlayerState } from '../lib/engine/types';
+import { largestGap } from '../lib/engine/types';
+import { formatTimecode, isInClip, toMain } from '../lib/timeline/map';
+import type { Timeline } from '../lib/timeline/types';
 
-import { useProject } from '../state/project';
+interface Props {
+  engineLabel: string;
+  state: PlayerState;
+  timeline: Timeline | null;
+  audioMode: string;
+}
 
-export function Hud() {
-  const status = useProject((state) => state.status);
-  const main = useProject((state) => state.main);
-  const plan = useProject((state) => state.plan);
-
-  const rows: [string, string][] = [];
-  if (status) {
-    rows.push(['mime', status.mime]);
-    rows.push([
-      'buffered',
-      status.buffered.length
-        ? status.buffered.map(([from, to]) => `${from.toFixed(2)}–${to.toFixed(2)}s`).join(', ')
-        : 'empty',
-    ]);
-    rows.push(['gaps', String(Math.max(0, status.buffered.length - 1))]);
-    rows.push(['appended through', `${status.appendedThrough.toFixed(2)}s`]);
-    rows.push(['fragments', String(status.fragments)]);
-    rows.push(['bytes appended', `${(status.bytesAppended / 1024).toFixed(0)} KB`]);
-    rows.push([
-      'silence frames',
-      `${status.silenceFrames} (${((status.silenceFrames * 1024) / 48000 * 1000).toFixed(0)} ms)`,
-    ]);
-  } else {
-    rows.push(['—', 'nothing appended yet']);
-  }
-  if (plan?.snaps?.length) {
-    const worst = plan.snaps.reduce(
-      (max: any, snap: any) => (Math.abs(snap.drift) > Math.abs(max.drift) ? snap : max),
-      plan.snaps[0],
-    );
-    rows.push(['worst snap drift', `${Math.round(worst.drift * 1000)} ms`]);
-  }
+export function Hud({ engineLabel, state, timeline, audioMode }: Props) {
+  const mainTime = timeline ? toMain(timeline, state.time) : 0;
+  const inClip = timeline ? isInClip(timeline, state.time) : false;
+  const gap = largestGap(state.buffered);
+  const buffered = state.buffered
+    .map((r) => `${formatTimecode(r.start)}–${formatTimecode(r.end)}`)
+    .join('  ');
 
   return (
-    <section className="panel">
-      <h2>Buffer</h2>
-      <dl className="hud">
-        {rows.map(([term, value]) => (
-          <div key={term} className="hud-row">
-            <dt>{term}</dt>
-            <dd>{value}</dd>
-          </div>
-        ))}
-      </dl>
-      {!main ? <p className="muted">Load a main video first.</p> : null}
-    </section>
+    <div className="hud">
+      <Row label="engine" value={engineLabel} />
+      <Row label="virtual" value={formatTimecode(state.time)} />
+      <Row label="main" value={`${formatTimecode(mainTime)}${inClip ? '  (in clip)' : ''}`} />
+      <Row label="segment" value={state.segmentLabel || '—'} />
+      <Row label="buffered" value={`${state.buffered.length} range${state.buffered.length === 1 ? '' : 's'} · ${gap.toFixed(3)}s max gap`} />
+      {buffered && <div style={{ color: 'var(--dim)' }}>{buffered}</div>}
+      <Row label="queued" value={`${state.appending} appends`} />
+      <Row label="audio" value={audioMode} />
+      <Row label="error" value={state.lastError ?? 'none'} />
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="row">
+      <span>{label}</span>
+      <span>{value}</span>
+    </div>
   );
 }
