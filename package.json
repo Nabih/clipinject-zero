@@ -1,20 +1,17 @@
 {
-  "name": "app",
+  "name": "clipinject-zero",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test \"tests/**/*.test.js\""
   },
   "dependencies": {
-    "mp4-muxer": "^5.2.2",
-    "mp4box": "^2.5.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "video.js": "^8.24.1",
     "zustand": "^5.1.0"
   },
   "devDependencies": {
@@ -26,5 +23,6 @@
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
-  }
+  },
+  "description": "ClipInject with a hand-written MP4 demuxer, fragment muxer and single-SourceBuffer engine. React for the UI; no video libraries."
 }

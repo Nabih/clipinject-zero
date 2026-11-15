@@ -1,179 +1,145 @@
-import { useRef, useState } from 'react';
-import type { IndexedAsset } from '../lib/media/types';
-import { formatTime } from '../lib/timeline/map';
-import type { AssetKind } from '../lib/timeline/types';
+/**
+ * Loading: one main video, then any number of clips (local files or a URL).
+ *
+ * Indexing happens in the demuxer, so the only thing this component decides is
+ * *where* a clip goes — which it asks for as a main-timeline time, because that is
+ * the timeline the user is thinking in.
+ */
 
-interface Props {
-  main: IndexedAsset | null;
-  clips: IndexedAsset[];
-  busy: { label: string; progress: number } | null;
-  playheadMainTime: number;
-  onFiles: (files: File[], kind: AssetKind) => void;
-  onRemove: (id: string) => void;
-  onInsert: (clipId: string) => void;
+import { useState } from 'react';
+import { useProject } from '../state/project';
+
+function fmt(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  return `${m}:${(seconds - m * 60).toFixed(2).padStart(5, '0')}`;
 }
 
-export function Library({ main, clips, busy, playheadMainTime, onFiles, onRemove, onInsert }: Props) {
-  return (
-    <>
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Main video</h2>
-          {main && <span className="chip accent">active</span>}
-        </div>
-        <div className="panel-body">
-          {main ? (
-            <>
-              <AssetRow asset={main} onRemove={() => onRemove(main.meta.id)} main />
-              <div style={{ marginTop: 9 }}>
-                <DropZone
-                  kind="main"
-                  label="Replace main video"
-                  hint="one long-form MP4"
-                  onFiles={onFiles}
-                  compact
-                />
-              </div>
-            </>
-          ) : (
-            <DropZone kind="main" label="Drop the main video" hint="one long-form MP4" onFiles={onFiles} />
-          )}
-          {busy && (
-            <div>
-              <div className="progress">
-                <i style={{ width: `${Math.round(busy.progress * 100)}%` }} />
-              </div>
-              <div className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
-                Indexing {busy.label} · {Math.round(busy.progress * 100)}%
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Clips</h2>
-          <span className="chip">{clips.length}</span>
-        </div>
-        <div className="panel-body">
-          {clips.length === 0 && <p className="hint">No clips yet. Add the short MP4s you want to inject.</p>}
-          {clips.map((clip) => (
-            <AssetRow
-              key={clip.meta.id}
-              asset={clip}
-              onRemove={() => onRemove(clip.meta.id)}
-              onInsert={main ? () => onInsert(clip.meta.id) : undefined}
-              insertLabel={formatTime(playheadMainTime, true)}
-            />
-          ))}
-          <div style={{ marginTop: clips.length ? 9 : 0 }}>
-            <DropZone kind="clip" label="Drop clips" hint="any number of MP4s" onFiles={onFiles} multiple compact />
-          </div>
-          {main && <p className="hint" style={{ marginTop: 9, marginBottom: 0 }}>
-            Insert lands at the playhead ({formatTime(playheadMainTime, true)}) snapped to the nearest cut.
-          </p>}
-        </div>
-      </section>
-    </>
-  );
-}
-
-function AssetRow({
-  asset,
-  main,
-  onRemove,
+/**
+ * One clip, with its own insert time.
+ *
+ * The time starts as "the playhead" but stops following it after the user edits
+ * the field, so typing a value is not undone by playback moving on.
+ */
+function ClipRow({
+  clip,
+  mainTime,
   onInsert,
-  insertLabel,
+  onRemove,
 }: {
-  asset: IndexedAsset;
-  main?: boolean;
-  onRemove: () => void;
-  onInsert?: () => void;
-  insertLabel?: string;
+  clip: any;
+  mainTime: number;
+  onInsert: (id: string, at: number) => void;
+  onRemove: (id: string) => void;
 }) {
-  const { meta } = asset;
+  const [typed, setTyped] = useState<string | null>(null);
+  const value = typed ?? String(Math.round(mainTime * 2) / 2);
+
   return (
-    <div className={`asset${main ? ' asset-main' : ''}`}>
-      <div className="asset-info">
-        <div className="asset-name" title={meta.name}>
-          {meta.name}
-        </div>
-        <div className="asset-meta">
-          {formatTime(meta.duration, true)} · {meta.video.width}×{meta.video.height} ·{' '}
-          {meta.video.codec.replace(/^avc1\./, 'avc1.')} · {meta.audio ? `${meta.audio.channels}ch` : 'no audio'}
-        </div>
-      </div>
-      {onInsert && (
-        <button className="btn primary" onClick={onInsert} title={`Insert at ${insertLabel}`}>
-          Insert
-        </button>
-      )}
-      <button className="icon-btn" onClick={onRemove} title="Remove">
-        ×
+    <div className="item">
+      <span className="name">{clip.name}</span>
+      <span className="meta">
+        {fmt(clip.duration)} · {clip.video.width}×{clip.video.height}
+        {clip.audio ? '' : ' · no audio'}
+      </span>
+      <input
+        type="number"
+        min={0}
+        step={0.5}
+        value={value}
+        onChange={(event) => setTyped(event.target.value)}
+        aria-label="insert at (main time)"
+      />
+      <button type="button" className="primary tiny" onClick={() => onInsert(clip.id, Number(value) || 0)}>
+        Insert
+      </button>
+      <button type="button" className="tiny" onClick={() => onRemove(clip.id)}>
+        Remove
       </button>
     </div>
   );
 }
 
-function DropZone({
-  kind,
-  label,
-  hint,
-  onFiles,
-  multiple,
-  compact,
-}: {
-  kind: AssetKind;
-  label: string;
-  hint: string;
-  onFiles: (files: File[], kind: AssetKind) => void;
-  multiple?: boolean;
-  compact?: boolean;
-}) {
-  const input = useRef<HTMLInputElement>(null);
-  const [drag, setDrag] = useState(false);
+export function Library({ mainTime }: { mainTime: number }) {
+  const main = useProject((state) => state.main);
+  const clips = useProject((state) => state.clips);
+  const busy = useProject((state) => state.busy);
+  const error = useProject((state) => state.error);
+  const loadMain = useProject((state) => state.loadMain);
+  const addClips = useProject((state) => state.addClips);
+  const addRemoteClip = useProject((state) => state.addRemoteClip);
+  const removeClip = useProject((state) => state.removeClip);
+  const addInsert = useProject((state) => state.addInsert);
 
-  const take = (list: FileList | null) => {
-    if (!list?.length) return;
-    const files = [...list].filter((f) => /\.(mp4|m4v|mov)$/i.test(f.name) || f.type.startsWith('video/'));
-    if (files.length) onFiles(files, kind);
-  };
+  const [url, setUrl] = useState('');
 
   return (
-    <div
-      className={`slot${drag ? ' drag' : ''}`}
-      style={compact ? { padding: '9px 10px', fontSize: 11.5 } : undefined}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDrag(true);
-      }}
-      onDragLeave={() => setDrag(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDrag(false);
-        take(e.dataTransfer.files);
-      }}
-      onClick={() => input.current?.click()}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') input.current?.click();
-      }}
-    >
-      {compact ? label : <strong>{label}</strong>}
-      <div style={{ fontSize: 10.5, marginTop: compact ? 0 : 3 }}>{compact ? hint : `Drag & drop or click · ${hint}`}</div>
-      <input
-        ref={input}
-        type="file"
-        accept="video/mp4,video/quicktime,.mp4,.m4v,.mov"
-        multiple={multiple}
-        hidden
-        onChange={(e) => {
-          take(e.target.files);
-          e.target.value = '';
-        }}
-      />
-    </div>
+    <section className="panel">
+      <div className="row">
+        <label className="file">
+          <input
+            type="file"
+            accept="video/mp4"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) loadMain(file);
+              event.target.value = '';
+            }}
+          />
+          <span>1 · Main video</span>
+        </label>
+        <label className="file">
+          <input
+            type="file"
+            accept="video/mp4"
+            multiple
+            disabled={!main}
+            onChange={(event) => {
+              const files = [...(event.target.files ?? [])];
+              if (files.length) addClips(files);
+              event.target.value = '';
+            }}
+          />
+          <span>2 · Add clips</span>
+        </label>
+        <span className="muted">
+          {main ? `${main.name} · ${fmt(main.duration)} · ${main.video.codec} ${main.video.width}×${main.video.height}` : 'no main loaded'}
+        </span>
+      </div>
+
+      <div className="row">
+        <input
+          type="url"
+          placeholder="…or paste a clip MP4 URL (needs CORS)"
+          value={url}
+          disabled={!main}
+          onChange={(event) => setUrl(event.target.value)}
+        />
+        <button
+          type="button"
+          disabled={!main || !url.trim()}
+          onClick={() => {
+            addRemoteClip(url.trim());
+            setUrl('');
+          }}
+        >
+          Fetch clip
+        </button>
+        {busy ? <span className="muted">{busy.label}…</span> : null}
+        {error ? <span className="error-text">{error}</span> : null}
+      </div>
+
+      <h2 style={{ marginTop: 16 }}>
+        Clips <span className="muted">{clips.length ? `(${clips.length})` : ''}</span>
+      </h2>
+      {clips.length === 0 ? (
+        <p className="muted">No clips yet.</p>
+      ) : (
+        <div className="library">
+          {clips.map((clip) => (
+            <ClipRow key={clip.id} clip={clip} mainTime={mainTime} onInsert={addInsert} onRemove={removeClip} />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
