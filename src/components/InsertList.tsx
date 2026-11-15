@@ -1,49 +1,176 @@
-/**
- * The insert list: what was asked for, where it actually lands, and the drift.
- *
- * Snapping to a sync sample is a real trade, so it is shown rather than swallowed.
- */
+import { useEffect, useState } from 'react';
+import type { IndexedAsset } from '../lib/media/types';
+import { formatTime, parseTime } from '../lib/timeline/map';
+import type { Insertion, Timeline } from '../lib/timeline/types';
 
-import { useProject } from '../state/project';
+interface Props {
+  insertions: Insertion[];
+  assets: Map<string, IndexedAsset>;
+  timeline: Timeline | null;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onSetAt: (id: string, atMainTime: number) => void;
+  onUpdate: (id: string, patch: Partial<Insertion>) => void;
+  onRemove: (id: string) => void;
+  onSeek: (virtualTime: number) => void;
+}
 
-export function InsertList() {
-  const inserts = useProject((state) => state.inserts);
-  const plan = useProject((state) => state.plan);
-  const removeInsert = useProject((state) => state.removeInsert);
+export function InsertList({
+  insertions,
+  assets,
+  timeline,
+  selectedId,
+  onSelect,
+  onSetAt,
+  onUpdate,
+  onRemove,
+  onSeek,
+}: Props) {
+  if (!insertions.length) {
+    return <p className="empty">No insertions yet. Drop a clip, then press Insert.</p>;
+  }
 
-  const snaps = new Map<string, any>((plan?.snaps ?? []).map((snap: any) => [snap.insertId, snap]));
-  const ordered = [...inserts].sort(
-    (a, b) => (snaps.get(a.id)?.snapped ?? 0) - (snaps.get(b.id)?.snapped ?? 0),
-  );
+  const sorted = [...insertions].sort((a, b) => a.snappedMainTime - b.snappedMainTime);
 
   return (
-    <section className="panel">
-      <h2>Inserts</h2>
-      {ordered.length === 0 ? (
-        <p className="muted">No inserts yet. Add a clip, then insert it at a time.</p>
-      ) : (
-        <div className="library">
-          {ordered.map((insert) => {
-            const snap = snaps.get(insert.id);
-            const drift = Math.round((snap?.drift ?? 0) * 1000);
-            return (
-              <div className="item" key={insert.id}>
-                <span className="name">{insert.asset.name}</span>
-                <span className="meta">
-                  asked {insert.atMainTime.toFixed(2)}s → {Math.max(0, snap?.snapped ?? 0).toFixed(2)}s
-                </span>
-                <span className={`drift${Math.abs(drift) > 500 ? ' bad' : ''}`}>
-                  {drift > 0 ? '+' : ''}
-                  {drift} ms
-                </span>
-                <button type="button" className="tiny" onClick={() => removeInsert(insert.id)}>
-                  Remove
+    <div>
+      {sorted.map((ins, index) => {
+        const clip = assets.get(ins.clipId);
+        const segment = timeline?.segments.find((s) => s.insertionId === ins.id);
+        const drift = ins.atMainTime - ins.snappedMainTime;
+        const cuts = clip?.meta.cutPoints ?? [];
+        const duration = (ins.outPoint - ins.inPoint).toFixed(2);
+
+        return (
+          <div
+            key={ins.id}
+            className={`insert${selectedId === ins.id ? ' clip-seg' : ''}`}
+            onPointerDown={() => onSelect(ins.id)}
+          >
+            <div className="insert-head">
+              <span className="chip">#{index + 1}</span>
+              <span className="insert-title" title={clip?.meta.name}>
+                {clip?.meta.name ?? 'missing clip'}
+              </span>
+              <span className="chip">{duration}s</span>
+              {segment && (
+                <button
+                  className="icon-btn"
+                  title="Jump to this clip"
+                  onClick={() => onSeek(segment.virtIn + 0.01)}
+                >
+                  ▸
                 </button>
+              )}
+              <button className="icon-btn" title="Remove" onClick={() => onRemove(ins.id)}>
+                ×
+              </button>
+            </div>
+
+            <div className="insert-grid">
+              <div>
+                <label>Insert at (main)</label>
+                <TimeField value={ins.atMainTime} onCommit={(seconds) => onSetAt(ins.id, seconds)} />
               </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
+              <div>
+                <label>Snapped</label>
+                <div className="snap" style={{ padding: '5px 0' }}>
+                  {formatTime(ins.snappedMainTime, true)}{' '}
+                  {Math.abs(drift) > 0.01 ? (
+                    <span className="off">({drift > 0 ? '+' : ''}{drift.toFixed(2)}s)</span>
+                  ) : (
+                    <span style={{ color: 'var(--dim)' }}>exact</span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label>In point</label>
+                <CutSelect
+                  value={ins.inPoint}
+                  cuts={cuts}
+                  max={ins.outPoint}
+                  onChange={(v) => onUpdate(ins.id, { inPoint: v })}
+                />
+              </div>
+              <div>
+                <label>Out point</label>
+                <CutSelect
+                  value={ins.outPoint}
+                  cuts={cuts}
+                  min={ins.inPoint}
+                  onChange={(v) => onUpdate(ins.id, { outPoint: v })}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TimeField({ value, onCommit }: { value: number; onCommit: (seconds: number) => void }) {
+  const [text, setText] = useState(() => formatTime(value, true));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setText(formatTime(value, true));
+  }, [value, focused]);
+
+  const commit = () => {
+    const parsed = parseTime(text);
+    if (parsed === null) {
+      setText(formatTime(value, true));
+      return;
+    }
+    onCommit(parsed);
+  };
+
+  return (
+    <input
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === 'Escape') {
+          setText(formatTime(value, true));
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
+function CutSelect({
+  value,
+  cuts,
+  min = 0,
+  max = Number.POSITIVE_INFINITY,
+  onChange,
+}: {
+  value: number;
+  cuts: number[];
+  min?: number;
+  max?: number;
+  onChange: (value: number) => void;
+}) {
+  const options = cuts.filter((c) => c >= min - 1e-6 && c <= max + 1e-6);
+  const list = options.length ? options : [value];
+
+  return (
+    <select className="select" value={String(value)} onChange={(e) => onChange(Number(e.target.value))}>
+      {list.map((cut) => (
+        <option key={cut} value={cut}>
+          {formatTime(cut, true)}
+        </option>
+      ))}
+    </select>
   );
 }

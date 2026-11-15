@@ -682,6 +682,36 @@ export async function readSampleBytes(asset, samples) {
   return out;
 }
 
+/**
+ * Samples covering `[from, to)`, backed up to the sync sample that precedes them.
+ *
+ * A fragment may only start on a sync sample: after a cut the decoder has nothing
+ * buffered, so a fragment beginning mid-GOP is undecodable and the element sits at
+ * `readyState` HAVE_METADATA with the playhead frozen. Re-appending after an edit
+ * is exactly that case, so the pre-roll frames are included even though they start
+ * before the requested time.
+ *
+ * @param {any} track
+ * @param {number} from
+ * @param {number} to
+ */
+export function samplesInRangeWithPreroll(track, from, to) {
+  if (!track) return [];
+  const start = track.samples.findIndex((s) => s.dts + s.duration > from + 1e-9);
+  if (start === -1) return [];
+  let first = start;
+  while (first > 0 && !track.samples[first].sync) first--;
+
+  /** @type {Sample[]} */
+  const out = [];
+  for (let i = first; i < track.samples.length; i++) {
+    const sample = track.samples[i];
+    if (sample.dts >= to - 1e-9) break;
+    out.push(sample);
+  }
+  return out;
+}
+
 /** Samples whose decode window falls inside `[from, to)` seconds. */
 export function samplesInRange(track, from, to) {
   if (!track) return [];

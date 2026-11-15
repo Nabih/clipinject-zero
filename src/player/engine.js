@@ -16,7 +16,7 @@
  */
 
 import { buildInit, buildSegment } from '../media/frag.js';
-import { readSampleBytes, samplesInRange } from '../media/mp4.js';
+import { readSampleBytes, samplesInRange, samplesInRangeWithPreroll } from '../media/mp4.js';
 import { canSilence, silenceFor } from '../media/silence.js';
 
 const LOOKAHEAD = 16;
@@ -41,6 +41,7 @@ export class Player {
     this.plan = null;
     this.mediaSource = null;
     this.sourceBuffer = null;
+    this.sourceBufferMime = null;
     this.sequence = 0;
     this.appendedThrough = 0;
     this.silenceFrames = 0;
@@ -67,6 +68,9 @@ export class Player {
    * @param {any} main indexed main asset
    */
   async setMain(main) {
+    // Never attach twice concurrently: the second call would tear down a buffer
+    // the first is still filling.
+    await this.ready;
     this.ready = this.#attach(main);
     await this.ready;
   }
@@ -95,11 +99,29 @@ export class Player {
       });
     }
 
+    if (this.sourceBuffer && this.sourceBufferMime === mime) {
+      // Same codecs: keep the buffer and flush it. Removing and re-adding a
+      // SourceBuffer that has held data throws QuotaExceededError in Chrome, which
+      // leaves the element with no buffer at all and appends silently doing nothing.
+      const end = this.sourceBuffer.buffered.length
+        ? this.sourceBuffer.buffered.end(this.sourceBuffer.buffered.length - 1)
+        : 0;
+      if (end > 0) await this.#remove(0, end);
+      this.plan = null;
+      this.appendedThrough = 0;
+      this.sequence = 0;
+      this.fragments = 0;
+      this.bytesAppended = 0;
+      this.silenceFrames = 0;
+      this.#emit();
+      return;
+    }
     if (this.sourceBuffer) {
       this.mediaSource.removeSourceBuffer(this.sourceBuffer);
       this.sourceBuffer = null;
     }
     this.sourceBuffer = this.mediaSource.addSourceBuffer(mime);
+    this.sourceBufferMime = mime;
     this.sourceBuffer.mode = 'segments';
     await this.#appendBytes(buildInit(main));
     this.#emit();
@@ -230,8 +252,12 @@ export class Player {
     const srcFrom = segment.srcIn + (virtFrom - segment.virtIn);
     const srcTo = segment.srcIn + (virtTo - segment.virtIn);
 
-    const videoSamples = samplesInRange(videoTrack, srcFrom, srcTo);
+    // Backed up to a sync sample: a chunk that starts mid-GOP cannot be decoded.
+    const videoSamples = samplesInRangeWithPreroll(videoTrack, srcFrom, srcTo);
     if (!videoSamples.length) return null;
+    if (!videoSamples[0].sync) {
+      throw new Error('internal: a fragment must start on a sync sample');
+    }
 
     const videoPayload = await readSampleBytes(asset, videoSamples);
     /** @type {{ trackId: number, timescale: number, payload: Uint8Array, samples: any[] }[]} */

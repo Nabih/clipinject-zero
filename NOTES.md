@@ -103,12 +103,40 @@ wedges the element. Players are now kept in a `WeakMap` keyed by the video eleme
 - **Audio must match the main track** (codec, sample rate, channels) or that clip
   plays silent. Muxing 44.1 kHz AAC into a 48 kHz track would need a re-encode.
 - **Multi-channel silence unsupported** — only mono and stereo constants exist.
-- **Removed with the libraries:** the video.js engine (it *is* a library), the
-  similarity/`mix` audio mode (needs decode + encode), and the remote-marker
-  prefetch UX. Remote URLs still work as clips, but they are fetched immediately
-  rather than armed for a lead time.
+- **Removed with the libraries:** the video.js engine (it *is* a library) and the
+  `mix` audio mode (needs an AAC encoder, which Chrome does not have). The UI was
+  restored to its previous form afterwards, so markers, the prefetch lead selector
+  (1s / 2s / 5s), the engine dropdown and the audio dropdown are all back — the
+  engine dropdown simply lists the two library-free engines.
 - **Safari untested.** No `safaridriver` on this machine. The single-fragment-per-
   append design is what Safari wants, but that is analysis, not measurement.
+
+## Restoring the previous UI
+
+The first cut of this fork replaced the UI as well as the media layer, which was
+not what was asked. `src/lib/timeline`, `remote.ts`, `support.ts`, `codec.ts`,
+`markerTrigger.ts`, the components, the store and the CSS were all library-free
+and were restored unchanged from `bde9c34`; only two things needed adapters:
+
+- `src/lib/media/indexer.ts` maps the lazy demuxer asset onto the `IndexedAsset`
+  shape the components expect (metadata for the UI, empty payloads because
+  nothing needs the bytes up front).
+- `src/lib/engine/MseEngine.ts` implements the old `PlayerEngine` interface over
+  the new `Player`.
+
+Porting it this way found two bugs the simpler UI had hidden:
+
+5. **Fragments could start mid-GOP.** The old UI rebuilt from four seconds behind
+   the playhead and usually landed on a keyframe by luck. With a rebuild at the
+   playhead itself, the fragment began on a non-sync sample: Chrome sat at
+   `readyState` HAVE_METADATA with the playhead frozen. Fixed with
+   `samplesInRangeWithPreroll`, which backs the selection up to the sync sample.
+6. **Re-attaching the source buffer killed playback silently.** The adapter called
+   `setMain` on every edit, and `setMain` removed and re-added the `SourceBuffer` —
+   the `QuotaExceededError` we measured in the parent project. `appendBuffer` then
+   did nothing at all while the trace still showed appends happening. `setMain` now
+   flushes an existing buffer with matching codecs instead of replacing it, and the
+   adapter only attaches when the main video actually changes.
 
 ## Next
 
